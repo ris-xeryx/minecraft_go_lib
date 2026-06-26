@@ -1,0 +1,22 @@
+# Binarios
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+/bin/
+/vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+*.out
+coverage.txt
