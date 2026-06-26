@@ -1,79 +1,106 @@
 package mcgo
 
-// Platform identifica el sistema operativo + arquitectura.
+// ── Platform ─────────────────────────────────────────────────────────────
+
 type Platform struct {
-	OS   string // "windows", "osx" (macOS), "linux"
+	OS   string // "windows", "osx", "linux"
 	Arch string // "x86", "x64", "arm64"
 }
 
-// CurrentPlatform detecta la plataforma actual.
-func CurrentPlatform() Platform {
-	return Platform{
-		OS:   currentOSName(),
-		Arch: currentArchName(),
-	}
-}
+func Host() Platform { return Platform{OS: currentOS(), Arch: currentArch()} }
 
-// Version es una versión disponible del manifiesto de Mojang.
-type Version struct {
+// ── Mojang API types ─────────────────────────────────────────────────────
+
+type ManifestVersion struct {
 	ID      string `json:"id"`
 	Type    string `json:"type"`
 	URL     string `json:"url"`
 	Release string `json:"time"`
 }
 
-// VersionManifest es la respuesta de version_manifest_v2.json
 type VersionManifest struct {
 	Latest struct {
 		Release  string `json:"release"`
 		Snapshot string `json:"snapshot"`
 	} `json:"latest"`
-	Versions []Version `json:"versions"`
+	Versions []ManifestVersion `json:"versions"`
 }
 
-// Profile es el resultado de autenticación (offline o Microsoft).
+type VersionInfo struct {
+	Arguments     *VersionArguments `json:"arguments,omitempty"`
+	GameArguments []string          `json:"minecraftArguments,omitempty"`
+	Libraries     []Library         `json:"libraries"`
+	AssetIndex    *AssetIndex       `json:"assetIndex,omitempty"`
+	Assets        string            `json:"assets,omitempty"`
+	Downloads     *VersionDownloads `json:"downloads"`
+	JavaVersion   *JavaVersion      `json:"javaVersion,omitempty"`
+	MainClass     string            `json:"mainClass"`
+	ID            string            `json:"id"`
+	Type          string            `json:"type"`
+	InheritsFrom  string            `json:"inheritsFrom,omitempty"`
+	JAR           string            `json:"jar,omitempty"`
+}
+
+type VersionArguments struct {
+	Game []VersionArg `json:"game"`
+	JVM  []VersionArg `json:"jvm"`
+}
+
+type VersionArg struct {
+	Value []string `json:"value,omitempty"`
+	Rules []Rule   `json:"rules,omitempty"`
+}
+
+type AssetIndex struct {
+	ID        string `json:"id"`
+	URL       string `json:"url"`
+	SHA1      string `json:"sha1"`
+	TotalSize int64  `json:"totalSize"`
+}
+
+type VersionDownloads struct {
+	Client *Download `json:"client"`
+	Server *Download `json:"server"`
+}
+
+type JavaVersion struct {
+	Component    string `json:"component"`
+	MajorVersion int    `json:"majorVersion"`
+}
+
+// ── Profile ──────────────────────────────────────────────────────────────
+
 type Profile struct {
 	Username    string `json:"username"`
 	UUID        string `json:"uuid"`
 	AccessToken string `json:"access_token,omitempty"`
-	PlayerName  string `json:"player_name,omitempty"`
-	XUID        string `json:"xuid,omitempty"`
 }
 
-// LoaderType identifica el loader (Vanilla, Fabric, Quilt, Forge, NeoForge).
-type LoaderType string
+// ── Loader ───────────────────────────────────────────────────────────────
+
+type Loader string
 
 const (
-	LoaderVanilla  LoaderType = "Vanilla"
-	LoaderFabric   LoaderType = "Fabric"
-	LoaderQuilt    LoaderType = "Quilt"
-	LoaderForge    LoaderType = "Forge"
-	LoaderNeoForge LoaderType = "NeoForge"
+	Vanilla  Loader = "Vanilla"
+	Fabric   Loader = "Fabric"
+	Quilt    Loader = "Quilt"
+	Forge    Loader = "Forge"
+	NeoForge Loader = "NeoForge"
 )
 
-// Instance es una instalación de Minecraft: versión + loader.
-type Instance struct {
-	Name          string
-	Version       string
-	Loader        LoaderType
-	LoaderVersion string
-	Directory     string
+func Loaders() []Loader {
+	return []Loader{Vanilla, Fabric, Quilt, NeoForge, Forge}
 }
 
-// LaunchMemory define la memoria RAM del proceso.
-type LaunchMemory struct {
-	Min string // "2G"
-	Max string // "4G"
-}
+// ── Launch ───────────────────────────────────────────────────────────────
 
-// LaunchOptions son las opciones para lanzar Minecraft.
-type LaunchOptions struct {
-	Instance    Instance
-	Profile     Profile
-	Memory      LaunchMemory
-	JVMArgs     []string
-	GameArgs    []string
-	JavaPath    string
-	NativesPath string
-	EventBus    *EventBus
+type LaunchOpts struct {
+	Version string
+	Loader  Loader
+	Dir     string // where .minecraft directory lives
+	Profile Profile
+	MinRAM  string // "2G"
+	MaxRAM  string // "4G"
+	JVMArgs []string
+	Bus     *EventBus
 }

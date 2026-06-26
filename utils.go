@@ -1,8 +1,10 @@
 package mcgo
 
 import (
+	"crypto/md5"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,8 +15,9 @@ import (
 	"time"
 )
 
-// currentOSName devuelve el nombre de OS que usa Mojang en sus metadatos.
-func currentOSName() string {
+// ── Platform detection ───────────────────────────────────────────────────
+
+func currentOS() string {
 	switch runtime.GOOS {
 	case "windows":
 		return "windows"
@@ -25,8 +28,7 @@ func currentOSName() string {
 	}
 }
 
-// currentArchName devuelve la arquitectura en formato Mojang.
-func currentArchName() string {
+func currentArch() string {
 	switch runtime.GOARCH {
 	case "amd64":
 		return "x64"
@@ -39,10 +41,12 @@ func currentArchName() string {
 	}
 }
 
-// httpGet con timeout default.
-func httpGet(url string) (*http.Response, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
+// ── HTTP ─────────────────────────────────────────────────────────────────
+
+var httpClient = &http.Client{Timeout: 30 * time.Second}
+
+func fetch(url string) (*http.Response, error) {
+	resp, err := httpClient.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -53,121 +57,145 @@ func httpGet(url string) (*http.Response, error) {
 	return resp, nil
 }
 
-// httpGetJSON hace GET y parsea JSON.
-func httpGetJSON(url string, v interface{}) error {
-	resp, err := httpGet(url)
+func fetchJSON(url string, v any) error {
+	resp, err := fetch(url)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	return jsonDecode(resp.Body, v)
+	return json.NewDecoder(resp.Body).Decode(v)
 }
 
-// ensureDir crea el directorio si no existe.
-func ensureDir(path string) error {
-	return os.MkdirAll(path, 0755)
+func readJSON(path string, v any) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return json.NewDecoder(f).Decode(v)
 }
 
-// sha1OfFile calcula el SHA1 de un archivo.
-func sha1OfFile(path string) (string, error) {
+func postJSON(url string, body any, v any) error {
+	b, _ := json.Marshal(body)
+	resp, err := httpClient.Post(url, "application/json", strings.NewReader(string(b)))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if v != nil {
+		return json.NewDecoder(resp.Body).Decode(v)
+	}
+	return nil
+}
+
+// ── Filesystem ───────────────────────────────────────────────────────────
+
+func mkdir(path string) error { return os.MkdirAll(path, 0755) }
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// ── SHA1 ─────────────────────────────────────────────────────────────────
+
+func sha1File(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
 	h := sha1.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
+	io.Copy(h, f)
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// fileExists verifica si un archivo existe.
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
+// ── MD5 + UUID helpers ──────────────────────────────────────────────────
+
+func md5Hash(data []byte) []byte {
+	h := md5.Sum(data)
+	return h[:]
 }
 
-// getenvLee una variable de entorno (wrapper para testability).
-func getenv(key string) string {
-	return os.Getenv(key)
+func uuidFormat(b []byte) string {
+	b[6] = (b[6] & 0x0f) | 0x30
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// downloadFileDescarga un archivo (con verificación SHA1 opcional y progreso).
-// name para reportar.
-func downloadFile(url, path, expectedSHA1 string, bus *EventBus) error {
-	if err := ensureDir(filepath.Dir(path)); err != nil {
+// ── Download ─────────────────────────────────────────────────────────────
+
+func downloadFile(url, path, sha1 string, bus *EventBus) error {
+	if err := mkdir(filepath.Dir(path)); err != nil {
 		return err
 	}
-
 	if bus != nil {
 		bus.emitDownloadStarted(url)
 	}
 
-	resp, err := httpGet(url)
+	resp, err := fetch(url)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	total := resp.ContentLength
 	out, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
 
+	total := resp.ContentLength
 	buf := make([]byte, 32*1024)
 	var loaded int64
 	for {
-		n, err := resp.Body.Read(buf)
+		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
-			if _, werr := out.Write(buf[:n]); werr != nil {
-				return werr
-			}
+			out.Write(buf[:n])
 			loaded += int64(n)
 			if bus != nil {
 				bus.emitProgress(loaded, total)
 			}
 		}
-		if err == io.EOF {
+		if rerr == io.EOF {
 			break
 		}
-		if err != nil {
-			return err
+		if rerr != nil {
+			return rerr
 		}
 	}
-
 	if bus != nil {
 		bus.emitFileDownloaded(path)
 	}
 
-	if expectedSHA1 != "" {
-		actual, err := sha1OfFile(path)
-		if err != nil {
-			return err
-		}
-		if !strings.EqualFold(actual, expectedSHA1) {
-			return fmt.Errorf("checksum mismatch: expected %s, got %s", expectedSHA1, actual)
+	if sha1 != "" {
+		if actual, _ := sha1File(path); !strings.EqualFold(actual, sha1) {
+			return fmt.Errorf("sha1 mismatch: %s != %s", sha1, actual)
 		}
 	}
-
 	return nil
 }
 
-// downloadIfMissingDescarga si el archivo no existe o checksum inválido.
-func downloadIfMissing(url, path, expectedSHA1 string, bus *EventBus) error {
+func downloadIfMissing(url, path, sha1 string, bus *EventBus) error {
 	if bus != nil {
 		bus.emitFileChecked(path)
 	}
-	if fileExists(path) {
-		if expectedSHA1 == "" {
+	if exists(path) {
+		if sha1 == "" {
 			return nil
 		}
-		actual, err := sha1OfFile(path)
-		if err == nil && strings.EqualFold(actual, expectedSHA1) {
+		if actual, _ := sha1File(path); strings.EqualFold(actual, sha1) {
 			return nil
 		}
 	}
-	return downloadFile(url, path, expectedSHA1, bus)
+	return downloadFile(url, path, sha1, bus)
+}
+
+// ── Misc ─────────────────────────────────────────────────────────────────
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }

@@ -1,16 +1,17 @@
-# minecraft_go_lib
+# mcgo — Minecraft launcher library for Go
 
-> Librería Go para crear launchers de Minecraft. Inspirada en `minecraft-launcher-lib` (Python), `MCLC` (Node.js), `lighty-launcher` (Rust), `PrismLauncher` (C++).
-
-## Instalación
+Create your own Minecraft launcher in Go. Inspired by
+`minecraft-launcher-lib` (Python), `MCLC` (Node.js), `lighty-launcher` (Rust).
 
 ```bash
 go get github.com/ris-xeryx/minecraft_go_lib
 ```
 
-## Ejemplo
+---
 
-### Obtener versiones disponibles
+## Quick start: build a launcher in 3 steps
+
+### 1. List versions
 
 ```go
 package main
@@ -21,121 +22,121 @@ import (
 )
 
 func main() {
-	versions, _ := mcgo.GetAllVersions()
-	fmt.Printf("Hay %d versiones disponibles\n", len(versions))
-	latest, _ := mcgo.GetLatestRelease()
-	fmt.Println("Release más reciente:", latest)
+	versions, _ := mcgo.Versions()
+	latest, _ := mcgo.Latest("release")
+	fmt.Printf("%d versions, latest is %s\n", len(versions), latest)
 }
 ```
 
-### Instalar una versión
+### 2. Authenticate
 
 ```go
+// Offline (no password needed)
+profile, _ := mcgo.OfflineAuth{"MyPlayer"}.Login()
+
+// Microsoft (device code)
+auth := mcgo.MicrosoftAuth{ClientID: "your-azure-app-client-id"}
+auth.OnCode = func(code, url string) {
+	fmt.Printf("Go to %s and enter: %s\n", url, code)
+}
+profile, _ := auth.Login()
+```
+
+### 3. Install and launch
+
+```go
+// Download Minecraft 1.21.4
 bus := mcgo.NewEventBus()
-bus.Subscribe(func(e mcgo.Event) {
-	if e.Type == mcgo.EventDownloadProgress {
-		fmt.Printf("\r%d / %d bytes", e.BytesLoaded, e.TotalBytes)
-	}
+bus.On(func(e mcgo.Event) {
+	fmt.Println(e.Message)
 })
 
-_, err := mcgo.Install(mcgo.InstallParams{
-	Version:    "1.21.4",
-	Directory:  "/path/to/.minecraft",
-	EventBus:   bus,
-})
-```
+mcgo.Install("1.21.4", "/home/user/.minecraft", bus)
 
-### Auth offline
-
-```go
-auth := mcgo.NewOfflineAuth("Player123")
-profile, _ := auth.Authenticate()
-fmt.Println(profile.Username, profile.UUID)
-```
-
-### Auth Microsoft (device code)
-
-```go
-auth := mcgo.NewMicrosoftAuth("your-azure-app-client-id")
-auth.DeviceCodeCallback = func(code, url string) {
-	fmt.Printf("Visita %s e introduce el código %s\n", url, code)
-}
-profile, _ := auth.Authenticate()
-fmt.Println(profile.Username, profile.UUID)
-```
-
-### Lanzar Minecraft
-
-```go
-cmd, err := mcgo.Launch(mcgo.LaunchOptions{
-	Instance: mcgo.Instance{
-		Name:      "my-instance",
-		Version:   "1.21.4",
-		Loader:    mcgo.LoaderVanilla,
-		Directory: "/path/to/.minecraft",
-	},
+// Launch it
+cmd, _ := mcgo.Launch(mcgo.LaunchOpts{
+	Version: "1.21.4",
+	Dir:     "/home/user/.minecraft",
 	Profile: profile,
-	Memory:  mcgo.LaunchMemory{Min: "2G", Max: "4G"},
+	MinRAM:  "2G",
+	MaxRAM:  "4G",
 })
-if err != nil {
-	panic(err)
-}
 cmd.Wait()
 ```
 
-### Resolver versión de un loader
+---
+
+## API reference
+
+### Versions & manifests
+
+| Function | Returns |
+|----------|---------|
+| `Versions()` | All available Minecraft versions |
+| `Latest("release")` | Latest release ID |
+| `Latest("snapshot")` | Latest snapshot ID |
+
+### Authentication
+
+| Function | Returns |
+|----------|---------|
+| `OfflineAuth{Username}.Login()` | `Profile` (no password) |
+| `MicrosoftAuth{ClientID}.Login()` | `Profile` via device-code flow |
+| `MicrosoftAuth.OnCode` | Callback to show user the code/URL |
+
+### Installation
+
+| Function | Returns |
+|----------|---------|
+| `Install(version, dir, bus)` | Downloads client, libs, assets, natives |
+
+### Loaders
+
+| Function | Returns |
+|----------|---------|
+| `LoaderVersion(Fabric, "1.21.4")` | Latest loader version string |
+| `Loaders()` | `[Vanilla, Fabric, Quilt, NeoForge, Forge]` |
+
+### Launch
+
+| Function | Returns |
+|----------|---------|
+| `Launch(LaunchOpts{...})` | Running `*exec.Cmd` |
+
+`LaunchOpts` fields: `Version`, `Dir`, `Profile`, `MinRAM`, `MaxRAM`, `JVMArgs`, `Bus`.
+
+### Events
 
 ```go
-fabricVer, _ := mcgo.LatestLoaderVersion(mcgo.LoaderFabric, "1.21.4")
-fmt.Println("Fabric:", fabricVer)
+bus.On(func(e mcgo.Event) {
+	switch e.Type {
+	case mcgo.EvtDownloadProgress:
+		fmt.Printf("%d/%d\n", e.BytesLoaded, e.TotalBytes)
+	case mcgo.EvtError:
+		fmt.Println(e.Error)
+	}
+})
 ```
 
-## API
+| Constant | When |
+|----------|------|
+| `EvtInstallStarted` | Install begins |
+| `EvtFileChecked` | Checking SHA1 of existing file |
+| `EvtDownloadStarted` | Download begins |
+| `EvtDownloadProgress` | Bytes loaded (BytesLoaded / TotalBytes) |
+| `EvtFileDownloaded` | Single file done |
+| `EvtInstallCompleted` | All files downloaded |
+| `EvtLaunchStarted` | JVM command built |
+| `EvtProcessStarted` | Minecraft process running |
+| `EvtError` | Error occurred |
 
-| Función | Descripción |
-|---------|-------------|
-| `GetAllVersions()` | Lista de versiones disponibles (Mojang) |
-| `GetLatestRelease()` / `GetLatestSnapshot()` | Última release/snapshot |
-| `GetVersionInfo(id)` | JSON completo de una versión |
-| `Install(params)` | Descarga client.jar, libs, assets, natives |
-| `Launch(opts)` | Lanza Minecraft y devuelve `*exec.Cmd` |
-| `LatestLoaderVersion(loader, mcVer)` | Resuelve la versión más reciente del loader |
-| `NewOfflineAuth(username)` | Auth offline (solo username) |
-| `NewMicrosoftAuth(clientID)` | Auth Microsoft device code |
-| `FindJava()` | Encuentra binario Java en el sistema |
-| `NewEventBus()` | Sistema de eventos para progreso |
+### Utilities
 
-## Eventos
+| Function | Returns |
+|----------|---------|
+| `FindJava()` | Path to Java binary |
+| `Host()` | Current `Platform{OS, Arch}` |
 
-```go
-const (
-	EventInstallStarted EventType = iota
-	EventFileChecked
-	EventDownloadStarted
-	EventDownloadProgress
-	EventFileDownloaded
-	EventInstallCompleted
-	EventLaunchStarted
-	EventProcessStarted
-	EventProcessOutput
-	EventProcessExited
-	EventError
-)
-```
+## License
 
-## Características
-
-- ✅ Fetch de versions manifest de Mojang
-- ✅ Auth offline (UUID igual que Mojang: MD5("OfflinePlayer:username"))
-- ✅ Auth Microsoft device code flow (Azure → Xbox Live → XSTS → Minecraft)
-- ✅ Instalación: client.jar, libraries, assets, natives (con rules por-OS)
-- ✅ Resolución de loaders: Fabric, Quilt, Forge, NeoForge
-- ✅ Detección de Java (JAVA_HOME, PATH, ubicaciones comunes)
-- ✅ Event system con progreso de descarga
-- ✅ Multi-OS (Windows, macOS, Linux)
-- ✅ Verificación SHA1 de archivos
-- ✅ Soporte para versiones `inheritsFrom` (hereda de padre)
-
-## Licencia
-
-[MIT](LICENSE)
+MIT

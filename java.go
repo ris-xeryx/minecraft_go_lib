@@ -5,95 +5,61 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 )
 
-// FindJava intenta localizar un binario java en el sistema.
-// Orden: JAVA_HOME/bin/java, java en PATH, ubicaciones comunes.
+// FindJava locates a java binary on the system.
 func FindJava() (string, error) {
-	// 1. JAVA_HOME
-	if home := envString("JAVA_HOME"); home != "" {
-		bin := javaBin(home + "/bin")
-		if javaBinExists(bin) {
+	// JAVA_HOME
+	if home := envOr("JAVA_HOME", ""); home != "" {
+		bin := filepath.Join(home, "bin", javaExe())
+		if ok, _ := javaOk(bin); ok {
 			return bin, nil
 		}
 	}
-
-	// 2. PATH
+	// PATH
 	if bin, err := exec.LookPath("java"); err == nil {
 		return bin, nil
 	}
-
-	// 3. Ubicaciones comunes
-	for _, p := range commonJavaPaths() {
-		if javaBinExists(p) {
-			return p, nil
+	// Common locations
+	for _, p := range commonJavaDirs() {
+		bin := filepath.Join(p, javaExe())
+		if ok, _ := javaOk(bin); ok {
+			return bin, nil
 		}
 	}
-
-	return "", fmt.Errorf("java not found; set JAVA_HOME or install Java")
+	return "", fmt.Errorf("java not found. Set JAVA_HOME or install Java")
 }
 
-// javaBinDevuelve la ruta a java ejecutable en un directorio bin.
-func javaBin(dir string) string {
-	name := "java"
+func javaExe() string {
 	if runtime.GOOS == "windows" {
-		name = "java.exe"
+		return "java.exe"
 	}
-	return filepath.Join(dir, name)
+	return "java"
 }
 
-func javaBinExists(path string) bool {
+func javaOk(path string) (bool, error) {
 	_, err := exec.Command(path, "-version").CombinedOutput()
-	return err == nil
+	return err == nil, err
 }
 
-// commonJavaDevuelve las rutas comunes donde buscar Java por SO.
-func commonJavaPaths() []string {
+func commonJavaDirs() []string {
 	switch runtime.GOOS {
 	case "windows":
 		return []string{
-			`C:\Program Files\Java\jre\bin\java.exe`,
-			`C:\Program Files\Java\jdk\bin\java.exe`,
-			`C:\Program Files\Eclipse Adoptium\jdk-17\bin\java.exe`,
+			`C:\Program Files\Java\jre\bin`,
+			`C:\Program Files\Java\jdk\bin`,
+			`C:\Program Files\Eclipse Adoptium\jdk-17\bin`,
 		}
 	case "darwin":
 		return []string{
-			"/Library/Java/JavaVirtualMachines/*/Contents/Home/bin/java",
-			"/opt/homebrew/opt/openjdk/bin/java",
+			"/Library/Java/JavaVirtualMachines/*/Contents/Home/bin",
+			"/opt/homebrew/opt/openjdk/bin",
 		}
-	default: // linux/bsd
+	default:
 		return []string{
-			"/usr/bin/java",
-			"/usr/lib/jvm/default/bin/java",
-			"/usr/lib/jvm/java-17-openjdk/bin/java",
-			"/opt/java/bin/java",
+			"/usr/lib/jvm/default/bin",
+			"/usr/lib/jvm/java-17-openjdk/bin",
+			"/opt/java/bin",
 		}
 	}
-}
-
-// JavaMajorVersion ejecuta `java -version` y parsea la major version.
-func JavaMajorVersion(javaPath string) (int, error) {
-	out, err := exec.Command(javaPath, "-version").CombinedOutput()
-	if err != nil {
-		return 0, err
-	}
-	s := string(out)
-	// Output: 'java version "17.0.1"' o 'openjdk version "17.0.1"' o 'version "1.8.0_291"'
-	parts := strings.Split(s, "\"")
-	if len(parts) < 2 {
-		return 0, fmt.Errorf("cannot parse java version")
-	}
-	ver := parts[1]
-	// "1.8.0_291" -> 8, "17.0.1" -> 17
-	nums := strings.Split(ver, ".")
-	if nums[0] == "1" && len(nums) > 1 {
-		return atoiSafe(nums[1]), nil
-	}
-	return atoiSafe(nums[0]), nil
-}
-
-// envStringLee una variable de entorno.
-func envString(key string) string {
-	return getenv(key)
 }

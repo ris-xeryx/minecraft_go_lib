@@ -8,195 +8,119 @@ import (
 	"strings"
 )
 
-// JavaPathEncontrar java si no se especifica en options.
-func (o *LaunchOptions) resolveJavaPath() (string, error) {
-	if o.JavaPath != "" {
-		return o.JavaPath, nil
+// Launch builds the JVM command and starts Minecraft. Returns the running *exec.Cmd.
+func Launch(opts LaunchOpts) (*exec.Cmd, error) {
+	if opts.Bus == nil {
+		opts.Bus = NewEventBus()
 	}
-	return FindJava()
+	java, err := FindJava()
+	if err != nil {
+		return nil, err
+	}
+	info, err := fetchVersion(opts.Version)
+	if err != nil {
+		return nil, err
+	}
+	p := Host()
+
+	cp := classpath(info, opts.Dir, p)
+	natives := filepath.Join(opts.Dir, "natives", info.ID)
+	args := buildJVM(opts, info, cp, natives, p)
+	args = append(args, info.MainClass)
+	args = append(args, buildGameArgs(info, opts, cp, p)...)
+
+	opts.Bus.Emit(Event{Type: EvtLaunchStarted, Message: "Launching"})
+
+	cmd := exec.Command(java, args...)
+	cmd.Dir = opts.Dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Start(); err != nil {
+		opts.Bus.emitError(err)
+		return nil, err
+	}
+	opts.Bus.Emit(Event{Type: EvtProcessStarted, Message: fmt.Sprintf("pid=%d", cmd.Process.Pid)})
+	return cmd, nil
 }
 
-// ClasspathList reúne todos los jars del classpath.
-func classpath(info *VersionInfo, dir string, platform Platform) []string {
-	var paths []string
-	libsDir := filepath.Join(dir, "libraries")
-	for i := range info.Libraries {
-		lib := &info.Libraries[i]
-		if !lib.AllowedFor(platform) {
-			continue
-		}
-		if lib.Downloads == nil || lib.Downloads.Artifact == nil {
-			continue
-		}
-		paths = append(paths, filepath.Join(libsDir, lib.Downloads.Artifact.Path))
+func buildJVM(opts LaunchOpts, info *VersionInfo, cp, natives string, p Platform) []string {
+	args := []string{
+		"-Xms" + opts.MinRAM,
+		"-Xmx" + opts.MaxRAM,
 	}
-	// client jar
-	jarID := info.ID
-	if info.JAR != "" {
-		jarID = info.JAR
-	}
-	clientJar := filepath.Join(dir, "versions", jarID, jarID+".jar")
-	paths = append(paths, clientJar)
-	return paths
-}
-
-// classpathSeparator por SO.
-func classpathSeparator(platform Platform) string {
-	if platform.OS == "windows" {
-		return ";"
-	}
-	return ":"
-}
-
-// buildGameArgs construye los argumentos del juego.
-func buildGameArgs(info *VersionInfo, opts *LaunchOptions, platform Platform) []string {
-	var args []string
-
-	// Argumentos modernos (1.13+)
 	if info.Arguments != nil {
-		for _, arg := range info.Arguments.Game {
-			if !RuleAllowed(arg.Rules, platform, nil) {
-				continue
+		for _, arg := range info.Arguments.JVM {
+			if Allowed(arg.Rules, p, nil) {
+				args = append(args, renderArgs(arg.Value, info, opts, cp)...)
 			}
-			args = append(args, renderArgValues(arg.Value, info, opts)...)
 		}
-	} else if len(info.GameArguments) > 0 {
-		// Legacy: pre-1.13, separados por espacio
-		legacyArgs := strings.Join(info.GameArguments, " ")
-		args = append(args, renderLegacyArgs(legacyArgs, info, opts)...)
+	} else {
+		args = append(args, "-Djava.library.path="+natives, "-cp", cp)
 	}
-
+	args = append(args, opts.JVMArgs...)
 	return args
 }
 
-func renderArgValues(values []string, info *VersionInfo, opts *LaunchOptions) []string {
+func buildGameArgs(info *VersionInfo, opts LaunchOpts, cp string, p Platform) []string {
+	var args []string
+	if info.Arguments != nil {
+		for _, arg := range info.Arguments.Game {
+			if Allowed(arg.Rules, p, nil) {
+				args = append(args, renderArgs(arg.Value, info, opts, cp)...)
+			}
+		}
+	} else if len(info.GameArguments) > 0 {
+		args = append(args, renderArgs(strings.Fields(strings.Join(info.GameArguments, " ")), info, opts, cp)...)
+	}
+	return args
+}
+
+func renderArgs(values []string, info *VersionInfo, opts LaunchOpts, cp string) []string {
 	var out []string
 	for _, v := range values {
-		out = append(out, renderTemplate(v, info, opts))
+		out = append(out, tmpl(v, info, opts, cp))
 	}
 	return out
 }
 
-// renderTemplate reemplaza placeholders como ${auth_player_name}.
-func renderTemplate(s string, info *VersionInfo, opts *LaunchOptions) string {
+func tmpl(s string, info *VersionInfo, opts LaunchOpts, cp string) string {
 	r := strings.NewReplacer(
 		"${auth_player_name}", opts.Profile.Username,
 		"${auth_uuid}", opts.Profile.UUID,
 		"${auth_access_token}", opts.Profile.AccessToken,
 		"${auth_session}", opts.Profile.AccessToken,
 		"${version_name}", info.ID,
-		"${game_directory}", opts.Instance.Directory,
-		"${assets_root}", filepath.Join(opts.Instance.Directory, "assets"),
+		"${game_directory}", opts.Dir,
+		"${assets_root}", filepath.Join(opts.Dir, "assets"),
 		"${assets_index_name}", info.Assets,
-		"${game_assets}", filepath.Join(opts.Instance.Directory, "assets"),
+		"${game_assets}", filepath.Join(opts.Dir, "assets"),
 		"${user_type}", "mojang",
 		"${version_type}", info.Type,
-		"${natives_directory}", opts.NativesPath,
-		"${launcher_name}", "minecraft_go_lib",
+		"${natives_directory}", filepath.Join(opts.Dir, "natives", info.ID),
+		"${launcher_name}", "mcgo",
 		"${launcher_version}", "0.1",
-		"${classpath}", strings.Join(classpath(info, opts.Instance.Directory, CurrentPlatform()),
-			classpathSeparator(CurrentPlatform())),
+		"${classpath}", cp,
 	)
 	return r.Replace(s)
 }
 
-// renderLegacyArgs aplica la misma lógica a args legacy separados por espacio.
-func renderLegacyArgs(joined string, info *VersionInfo, opts *LaunchOptions) []string {
-	parts := strings.Fields(joined)
-	var out []string
-	for _, p := range parts {
-		out = append(out, renderTemplate(p, info, opts))
-	}
-	return out
-}
-
-// buildJVMArgs construye los argumentos de JVM (modernos o default).
-func buildJVMArgs(info *VersionInfo, opts *LaunchOptions, platform Platform) []string {
-	var args []string
-
-	// Defaults comunes
-	args = append(args,
-		"-Xms"+opts.Memory.Min,
-		"-Xmx"+opts.Memory.Max,
-	)
-
-	// Argumentos modernos de JVM
-	if info.Arguments != nil {
-		for _, arg := range info.Arguments.JVM {
-			if !RuleAllowed(arg.Rules, platform, nil) {
-				continue
-			}
-			args = append(args, renderArgValues(arg.Value, info, opts)...)
+func classpath(info *VersionInfo, dir string, p Platform) string {
+	var paths []string
+	base := filepath.Join(dir, "libraries")
+	for i := range info.Libraries {
+		lib := &info.Libraries[i]
+		if lib.ok(p) && lib.Downloads != nil && lib.Downloads.Artifact != nil {
+			paths = append(paths, filepath.Join(base, lib.Downloads.Artifact.Path))
 		}
-	} else {
-		// Defaults legacy
-		args = append(args,
-			"-Djava.library.path="+opts.NativesPath,
-			"-cp",
-			strings.Join(classpath(info, opts.Instance.Directory, platform),
-				classpathSeparator(platform)),
-		)
 	}
-
-	// User JVM args
-	args = append(args, opts.JVMArgs...)
-
-	return args
-}
-
-// Launch construye el commandline y lanza el proceso de Minecraft.
-// Devuelve el *exec.Cmd para que el llamador pueda esperar/output.
-func Launch(opts LaunchOptions) (*exec.Cmd, error) {
-	if opts.Instance.Version == "" {
-		return nil, fmt.Errorf("version is required")
+	jarID := info.ID
+	if info.JAR != "" {
+		jarID = info.JAR
 	}
-	if opts.EventBus == nil {
-		opts.EventBus = NewEventBus()
+	paths = append(paths, filepath.Join(dir, "versions", jarID, jarID+".jar"))
+	if p.OS == "windows" {
+		return strings.Join(paths, ";")
 	}
-
-	// Encontrar Java
-	javaPath, err := opts.resolveJavaPath()
-	if err != nil {
-		return nil, err
-	}
-
-	// Fetch info de la versión
-	info, err := GetVersionInfo(opts.Instance.Version)
-	if err != nil {
-		return nil, err
-	}
-
-	// Natives path
-	nativesPath := opts.NativesPath
-	if nativesPath == "" {
-		nativesPath = filepath.Join(opts.Instance.Directory, "natives", info.ID)
-	}
-
-	platform := CurrentPlatform()
-
-	// Construir commandline
-	cmdArgs := buildJVMArgs(info, &opts, platform)
-	cmdArgs = append(cmdArgs, info.MainClass)
-	cmdArgs = append(cmdArgs, buildGameArgs(info, &opts, platform)...)
-
-	if opts.EventBus != nil {
-		opts.EventBus.Emit(Event{Type: EventLaunchStarted, Message: "Launching Minecraft"})
-	}
-
-	cmd := exec.Command(javaPath, cmdArgs...)
-	cmd.Dir = opts.Instance.Directory
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-
-	if err := cmd.Start(); err != nil {
-		opts.EventBus.emitError(fmt.Errorf("launch failed: %w", err))
-		return nil, err
-	}
-
-	if opts.EventBus != nil {
-		opts.EventBus.Emit(Event{Type: EventProcessStarted, Message: fmt.Sprintf("pid=%d", cmd.Process.Pid)})
-	}
-
-	return cmd, nil
+	return strings.Join(paths, ":")
 }
