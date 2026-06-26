@@ -2,6 +2,7 @@
 
 Create your own Minecraft launcher in Go. Inspired by
 `minecraft-launcher-lib` (Python), `MCLC` (Node.js), `lighty-launcher` (Rust).
+Built with [opencode](https://github.com/anomalyco/opencode) (DeepSeek V4 Pro).
 
 ```bash
 go get github.com/ris-xeryx/minecraft_go_lib
@@ -139,4 +140,4 @@ bus.On(func(e mcgo.Event) {
 
 ## License
 
-MIT
+GPL v3
